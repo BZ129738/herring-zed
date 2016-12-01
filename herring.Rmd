@@ -1,0 +1,235 @@
+---
+title: Analiza przyczyn stopniowego zmniejszania się rozmiaru śledzi oceanicznych
+  wyławianych w Europie
+author: "Bartosz Żabiński"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: spacelab
+    keep_md: yes
+    number_sections: yes
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE , warning=FALSE , error = FALSE)
+```
+
+# Streszczenie problemu
+
+Celem projektu jest określenie przyczyn stopniowego zmniejszania się długości śledzi oceanicznych wyławianych w Europie. Do analizy wykorzystano dane o pomiarze oraz warunkach życia śledzia oceanicznego w Europie z okresu ponad pięćdziesięciu lat. Analizowane dane obejmowały ponad 50 tysięcy rekordów. W celu rozpoznania przyczyn malejącego rozmiaru śledzia dokonano predykcji jego rozmiaru oraz przeprowadzono analizę ważności atrybutów najlepszego znalezionego modelu regresji. Analizując rozkład wartości danych oraz współczynnik korelacji atrybutów stwierdzono, iż dla zmiennych `lcop1`, `lcop2`, `cumf` oraz `totaln` istnieje  silna współliniowość i atrybuty te powinny zostać usunięte, ponieważ mogą wpływać negatywnie na wyniki predykcji.Na podstawie uzyskanych wyników wnioskować można, że na zmniejszanie rozmiaru śledzi największy wpływ ma temperatura przy powierzchni wody, jednak bardzo istotny jest także miesiąc połowu. Można więc przypuszczać, że przyczyną zmniejszania się śledzi jest zjawisko globalnego ocieplenia.
+
+
+# Wykorzystane biblioteki
+
+```{r libraries, results='hide', error=FALSE , message=FALSE , warning=FALSE} 
+library('knitr')
+library('dplyr')
+library('ggplot2')
+library('plotly')
+library('reshape2')
+library('corrplot')
+library('caret')
+```
+
+
+# Zbiór danych
+
+
+Aby wyniki raportu były powtarzalne ustawione zostało ziarno.
+```{r seed, cache=TRUE}
+set.seed(22)
+```
+
+
+## Wczytywanie danych
+
+Dane zostały wczytane z pliku CSV znajdującego się pod adresem http://www.cs.put.poznan.pl/dbrzezinski/teaching/zed/sledzie.csv. Zaznaczono również, że brakujące wartości zostały oznaczone w zbiorze danych znakiem `?`. Przedstawiono również 10 pierwszych wierszy zbioru danych w celu zapoznania się z ich strukturą.
+```{r Dataset_loading, cache=TRUE}
+
+df <-  read.csv(url("http://www.cs.put.poznan.pl/dbrzezinski/teaching/zed/sledzie.csv"), na.strings ="?")
+df <- tbl_df(df)
+
+
+head(df,10)
+
+```
+
+## Opis atrybutów
+
+* **length**: długość złowionego śledzia [cm]
+* **cfin1**: dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 1]
+* **cfin2**: dostępność planktonu [zagęszczenie Calanus finmarchicus gat. 2]
+* **chel1**: dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 1]
+* **chel2**: dostępność planktonu [zagęszczenie Calanus helgolandicus gat. 2]
+* **lcop1**: dostępność planktonu [zagęszczenie widłonogów gat. 1]
+* **lcop2**: dostępność planktonu [zagęszczenie widłonogów gat. 2]
+* **fbar**: natężenie połowów w regionie [ułamek pozostawionego narybku]
+* **recr**: roczny narybek [liczba śledzi]
+* **cumf**: łączne roczne natężenie połowów w regionie [ułamek pozostawionego narybku]
+* **totaln**: łączna liczba ryb złowionych w ramach połowu [liczba śledzi]
+* **sst**: temperatura przy powierzchni wody [°C]
+* **sal**: poziom zasolenia wody [Knudsen ppt]
+* **xmonth**: miesiąc połowu [numer miesiąca]
+* **nao**: oscylacja północnoatlantycka [mb]
+
+
+## Podsumowanie informacji o danych
+
+Zbiór danych posiada następujące rozmiary
+
+```{r dimension}
+dim(df)
+```
+
+Poniżej przedstawiono podstawowe statystyki dla badanego zbioru danych.
+
+```{r summary_code , cache=TRUE, results='hide'}
+kable(summary(df))
+```
+
+```{r summary_output , cache=TRUE , echo=FALSE}
+kable(summary(df[,2:8]))
+kable(summary(df[,9:15]))
+```
+
+# Brakujące wartości
+
+Ilość brakujących wartości dla poszczególnych zmiennych wygląda następująco:   
+
+```{r count_na}
+na_count <-sapply(df, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+na_count
+
+```
+
+Usunięto brakujące wartości ze zbioru danych poprzez podstawienie do zmiennych średniej arytmetycznej z danego połowu. Dane zostały pogrupowane wzlędem atrybutu `nao`.
+
+```{r remove_na}
+df2 <- df %>%
+  group_by(nao) %>%
+  mutate(
+          cfin1 = mean(cfin1, na.rm = TRUE),
+          cfin2 = mean(cfin2, na.rm = TRUE),
+          chel1 = mean(chel1, na.rm = TRUE),
+          chel2 = mean(chel2, na.rm = TRUE),
+          lcop1 = mean(lcop1, na.rm = TRUE),
+          lcop2 = mean(lcop2, na.rm = TRUE),
+          sst = mean(sst, na.rm = TRUE)
+                                      ) %>% 
+  select(-X)
+```
+
+
+# Rozkład wartości atrybutów
+
+Poniżej zostały przedstawione histogramy dla atrybutów w zbiorze danych. Można zauważyć, że poza atrybutem `length`, który ma rozkład zbliżony do normalnego, reszta atrybutów ma bardzo nieregularne rozkłady wartości ze względu na wysoką powtarzalność danych. 
+
+
+```{r histogram, results='asis', message=FALSE , warning=FALSE , error = FALSE}
+  headers <- c(names(df2))
+  for (i in headers){
+  xcol <- df2[i]
+  a <- ggplot(df2,aes(xcol)) + geom_histogram(col="black", fill="#3366FF", 
+                 alpha = .75 , bins = 30) + xlab(i) + ggtitle(paste("Histogram zmiennej " ,i)) + xlim(min(xcol),max(xcol)) + theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+  print(a)
+
+}
+
+```
+ 
+## Zmiana rozmiaru śledzi w czasie
+
+Na interaktywnym wykresie zobrazowano jak zmieniał się rozmiar śledzia odkąd rozpoczęto obserwację.
+
+```{r length_In_Time, message=FALSE , warning=FALSE , error = FALSE}
+ lengthInTime <- ggplot(df,aes(X,length)) + geom_smooth(method="auto", se=FALSE) + xlab("observation") + geom_hline(aes(yintercept=mean(length)),linetype="dashed",colour="red")
+ ggplotly(lengthInTime) 
+ 
+```
+
+Zauważono wyraźny spadek rozmiaru śledzia w badanym okresie.
+
+# Korelacja zmiennych w zbiorze danych
+
+W celu zbadania występowania korelacji między zmiennymi utworzono macierz korelacji. 
+
+```{r correlation, fig.height=7 }
+Matrix <- cor(df2)
+Matrix <- round(Matrix,2)
+corrplot(Matrix, method="color",type = "upper",  addCoef.col = "black", tl.col="black") 
+```
+
+Zmienne między którymi występuje silna współliniowość (tj. takie, dla których współczynnik korelacji przyjmuje wartości wyższe od 0,7) powinny zostać wyeliminowane. W badanym przypadku współczynnik korelacji przekroczył wartość 0,7 dla czterech zmiennych: `lcop1`, `lcop2`, `cumf` oraz `totaln`, co stanowi podstawę do ich eliminacji.
+
+# Regresja
+
+Zgodnie z poprzednim punktem dokonano wyboru atrybutów, które pomogą poprawnie przewidzieć wielkość śledzia i nie będą negatywnie wpływać na wyniki. Podzielono dane na zbiory treningowy (70%) i testowy (30%). Metodą oceny regresora będzie 10-
+krotna walidacja krzyżowa. Do budowy modelu regresora wybrano algorytm *Random Forest* ze względu na większą dokładność predykcji oraz skuteczność przy większej ilości danych.
+
+```{r regression , echo=FALSE, cache=TRUE}
+df2_split <- select(df2,-lcop1,-lcop2,-cumf, -totaln)
+split<-createDataPartition(y = df2_split$length, p = 0.70, list = FALSE)
+
+herringTrain <- df2_split[ split,]
+
+herringTest  <- df2_split[-split,]
+
+ctrl <- trainControl(
+              method = "repeatedcv",
+              number = 6,
+              repeats = 10)
+
+```
+
+
+```{r TrainData, cache=TRUE}
+fit <- train(length~.,
+              data = herringTrain,
+              method = "rf",
+              trControl = ctrl,
+              importance =TRUE,
+              ntree = 10)
+
+```
+
+Dla uzyskanego modelu obliczono wartość RMSE, czyli średniej kwadratowej błędów oraz współczynik determinacji R^2, na podstawie których szacuje się, że zbudowany model jest wzglednie zadowalający.
+```{r RMSE_R2 , cache=TRUE}
+fit
+```
+
+
+```{r Prediction, echo=FALSE}
+prediction <- predict(fit,herringTest)
+actual <- herringTest[, "length"]
+
+predictionPlot <- data.frame(prediction,actual)
+```
+
+Poniższy wykres prezentuje przewidywany oraz rzeczywisty zakres długości śledzia.
+
+```{r prediction_plot}
+p <- ggplot(predictionPlot,aes(x=length, y=prediction, color=length)) + geom_point() + geom_abline(color="red") + xlim(min(actual),max(actual)) + ylim(min(actual),max(actual)) + xlab("actual length") + ylab("predicted length")
+
+ggplotly(p) 
+
+```
+
+
+# Ważność atrybutów
+
+W celu rozpoznania przyczyn malejącego rozmiaru śledzia przeprowadzono analizę ważności atrybutów najlepszego znalezionego modelu regresji.
+
+
+```{r Attr_Importance}
+atrrImp <- varImp(fit)
+
+plot(atrrImp)
+
+```
+
+Na powyższym wykresie atrybuty zostały uporządkowane malejąco według stopnia istotności. Na jego podstawie stwierdzić można, że dwoma najważniejszymi atrybutami są temperatura przy powierzchni wody  oraz miesiąc połowu. Oznacza to, że wymienione dwa czynniki w głównej mierze mają wpływ na zmniejszanie się rozmiaru śledzi.

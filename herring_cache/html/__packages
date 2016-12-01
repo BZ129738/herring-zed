@@ -1,0 +1,10 @@
+base
+knitr
+dplyr
+ggplot2
+plotly
+reshape2
+corrplot
+lattice
+caret
+randomForest
